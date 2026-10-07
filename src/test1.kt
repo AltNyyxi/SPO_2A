@@ -24,11 +24,6 @@ class BranchingDemo {
         return "g"
     }
 
-    fun elvis(value: String?): Int {
-        val len = value?.length ?: 0
-        return if (len > 0) len else -1
-    }
-
     fun whenDemo(x: Int, a: Int, b: Int): String {
 
         when (x) {

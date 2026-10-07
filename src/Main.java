@@ -7,6 +7,8 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.util.*;
 import java.util.List;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 public class Main extends JFrame {
 
@@ -20,19 +22,62 @@ public class Main extends JFrame {
         @Override public String toString() { return type + "(" + value + ")"; }
     }
 
-    // ==== Состояние ====
+    // ==== Состояние Джилба ====
     private int absoluteComplexity = 0;
-    private int operatorCount = 0;
     private int maxNesting = 0;
     private final Map<String, Integer> branchCounts = new LinkedHashMap<>();
 
+    // ==== Состояние Холстеда (только операторы) ====
+    private final Map<String, Integer> operators = new LinkedHashMap<>();
+    private final Set<String> userTypes = new HashSet<>();
+    private final Set<String> procedures = new HashSet<>();
+    private final Set<String> returningFunctions = new HashSet<>();
+
     // ==== UI ====
     private final JTextField filePathField = new JTextField();
-    private final JTextArea metricsArea = new JTextArea(14, 60);
-    private final DefaultTableModel branchesModel =
-            new DefaultTableModel(new Object[]{"Ветвление", "Кол-во"}, 0);
+    private final JTextArea metricsArea = new JTextArea(14, 80);
+    private final DefaultTableModel branchesModel  = new DefaultTableModel(new Object[]{"Ветвление", "Кол-во"}, 0);
+    private final DefaultTableModel operatorsModel = new DefaultTableModel(new Object[]{"Оператор", "Кол-во"}, 0);
 
-    // ==== Многосимвольные операторы ====
+    // ==== Множества (ключевые слова Kotlin) ====
+    private static final Set<String> KEYWORD_OPERATORS = new HashSet<>(Arrays.asList(
+            "return", "break", "continue", "throw"
+    ));
+
+    private static final Set<String> COMPOUND_PART_KEYWORDS = new HashSet<>(Arrays.asList(
+            "else", "catch", "finally"
+    ));
+
+    private static final Set<String> COMPOUND_STARTERS = new HashSet<>(Arrays.asList(
+            "if", "when", "for", "while", "do", "try"
+    ));
+
+    private static final Set<String> SKIP_KEYWORDS = new HashSet<>(Arrays.asList(
+            "package", "import", "class", "interface", "object", "enum",
+            "fun", "val", "var", "typealias", "constructor", "init",
+            "companion", "data", "sealed", "open", "abstract", "final",
+            "override", "operator", "infix", "inline", "noinline",
+            "crossinline", "reified", "suspend", "tailrec", "external",
+            "annotation", "const", "lateinit", "inner",
+            "public", "private", "protected", "internal",
+            "true", "false", "null", "this", "super",
+            "is", "as", "in", "out", "by", "where",
+            "Unit", "Nothing", "Any",
+            "get", "set", "field", "property", "receiver", "param",
+            "setparam", "delegate", "file", "expect", "actual"
+    ));
+
+    private static final Set<String> TYPE_KEYWORDS = new HashSet<>(Arrays.asList(
+            "Int", "Long", "Short", "Byte", "Float", "Double", "Boolean",
+            "Char", "String", "Unit", "Any", "Nothing", "Number",
+            "List", "MutableList", "Set", "MutableSet", "Map", "MutableMap",
+            "Array", "IntArray", "LongArray", "DoubleArray", "BooleanArray",
+            "CharArray", "ByteArray", "ShortArray", "FloatArray",
+            "Pair", "Triple", "Sequence", "Iterable", "Collection",
+            "Comparable", "Runnable", "Throwable", "Exception",
+            "Error", "Function", "CharSequence"
+    ));
+
     private static final String[] MULTI_CHAR_OPS = new String[]{
             "===", "!==", "<<=", ">>=", "..<",
             "==", "!=", ">=", "<=", "&&", "||", "<<", ">>",
@@ -41,10 +86,10 @@ public class Main extends JFrame {
     };
 
     public Main() {
-        super("Парсер Kotlin — метрики Джилба");
+        super("Парсер Kotlin — метрики Джилба + операторы Холстеда");
         initUI();
         setDefaultCloseOperation(EXIT_ON_CLOSE);
-        setSize(1100, 700);
+        setSize(1200, 750);
         setLocationRelativeTo(null);
     }
 
@@ -56,17 +101,21 @@ public class Main extends JFrame {
         top.add(filePathField, BorderLayout.CENTER);
         top.setBorder(BorderFactory.createEmptyBorder(6, 6, 6, 6));
 
-        JTable branchesTable = new JTable(branchesModel);
-        JScrollPane brSp = new JScrollPane(branchesTable);
+        JScrollPane brSp = new JScrollPane(new JTable(branchesModel));
         brSp.setBorder(BorderFactory.createTitledBorder("Ветвления"));
+        JScrollPane opSp = new JScrollPane(new JTable(operatorsModel));
+        opSp.setBorder(BorderFactory.createTitledBorder("Операторы"));
+
+        JSplitPane tablesSplit = new JSplitPane(JSplitPane.HORIZONTAL_SPLIT, brSp, opSp);
+        tablesSplit.setResizeWeight(0.5);
 
         metricsArea.setEditable(false);
         metricsArea.setFont(new Font(Font.MONOSPACED, Font.PLAIN, 13));
         JScrollPane metSp = new JScrollPane(metricsArea);
-        metSp.setBorder(BorderFactory.createTitledBorder("Метрики Джилба"));
+        metSp.setBorder(BorderFactory.createTitledBorder("Метрики"));
 
-        JSplitPane mainSplit = new JSplitPane(JSplitPane.VERTICAL_SPLIT, brSp, metSp);
-        mainSplit.setResizeWeight(0.5);
+        JSplitPane mainSplit = new JSplitPane(JSplitPane.VERTICAL_SPLIT, tablesSplit, metSp);
+        mainSplit.setResizeWeight(0.55);
 
         setLayout(new BorderLayout());
         add(top, BorderLayout.NORTH);
@@ -95,9 +144,13 @@ public class Main extends JFrame {
         }
 
         absoluteComplexity = 0;
-        operatorCount = 0;
         maxNesting = 0;
         branchCounts.clear();
+
+        operators.clear();
+        userTypes.clear();
+        procedures.clear();
+        returningFunctions.clear();
 
         String raw;
         try {
@@ -110,17 +163,20 @@ public class Main extends JFrame {
         filePathField.setText(path);
 
         String code = removeCommentsAndPackage(raw);
-        List<Token> tokens = tokenize(code);
 
-        // Подсчёт операторов (все Operator-токены, кроме ';')
-        for (Token t : tokens) {
-            if (t.type == TokenType.Operator && !t.value.equals(";")) {
-                operatorCount++;
-            }
-        }
+        // --- Джилба: по полному коду ---
+        List<Token> jilbTokens = tokenize(code);
+        analyzeBranchesRange(jilbTokens, 0, jilbTokens.size(), 0);
 
-        // Анализ ветвлений
-        analyzeBranchesRange(tokens, 0, tokens.size(), 0);
+        // --- Холстед (только операторы): по телам функций ---
+        collectUserTypes(code);
+        String masked = maskLiterals(code);
+        classifyFunctions(code);
+
+        List<String> bodies = extractFunctionBodies(code);
+        String analysisCode = String.join("\n", bodies);
+        List<Token> holstedTokens = tokenize(analysisCode);
+        analyzeTokens(holstedTokens);
 
         displayResults();
     }
@@ -156,6 +212,170 @@ public class Main extends JFrame {
         return sb.toString();
     }
 
+    private String maskLiterals(String code) {
+        StringBuilder sb = new StringBuilder(code);
+        int n = sb.length();
+        int i = 0;
+        while (i < n) {
+            char c = sb.charAt(i);
+
+            if (c == '"' && i + 2 < n && sb.charAt(i + 1) == '"' && sb.charAt(i + 2) == '"') {
+                int j = i + 3;
+                while (j + 2 < n && !(sb.charAt(j) == '"' && sb.charAt(j + 1) == '"' && sb.charAt(j + 2) == '"')) {
+                    if (sb.charAt(j) != '\n') sb.setCharAt(j, ' ');
+                    j++;
+                }
+                for (int k = i; k < Math.min(j + 3, n); k++) {
+                    if (sb.charAt(k) != '\n') sb.setCharAt(k, ' ');
+                }
+                i = j + 3;
+                continue;
+            }
+            if (c == '"') {
+                int j = i + 1;
+                while (j < n) {
+                    char cj = sb.charAt(j);
+                    if (cj == '\\' && j + 1 < n) { sb.setCharAt(j, ' '); sb.setCharAt(j + 1, ' '); j += 2; continue; }
+                    if (cj == '"') break;
+                    if (cj != '\n') sb.setCharAt(j, ' ');
+                    j++;
+                }
+                i = j + 1;
+                continue;
+            }
+            if (c == '\'') {
+                int j = i + 1;
+                while (j < n) {
+                    char cj = sb.charAt(j);
+                    if (cj == '\\' && j + 1 < n) { sb.setCharAt(j, ' '); sb.setCharAt(j + 1, ' '); j += 2; continue; }
+                    if (cj == '\'') break;
+                    sb.setCharAt(j, ' ');
+                    j++;
+                }
+                i = j + 1;
+                continue;
+            }
+            i++;
+        }
+        return sb.toString();
+    }
+
+    private void collectUserTypes(String code) {
+        Pattern p = Pattern.compile(
+                "\\b(?:data\\s+|sealed\\s+|open\\s+|abstract\\s+|internal\\s+|private\\s+|public\\s+|protected\\s+|annotation\\s+|enum\\s+)*" +
+                        "(?:class|interface|object)\\s+([A-Za-z_]\\w*)");
+        Matcher m = p.matcher(code);
+        while (m.find()) userTypes.add(m.group(1));
+    }
+
+    private void classifyFunctions(String code) {
+        Pattern p = Pattern.compile(
+                "\\bfun\\b(?:\\s+<[^>]*>)?\\s+(?:[A-Za-z_]\\w*\\.)?([A-Za-z_]\\w*)\\s*\\(",
+                Pattern.DOTALL);
+        Matcher m = p.matcher(code);
+
+        while (m.find()) {
+            String name = m.group(1);
+            if (SKIP_KEYWORDS.contains(name)) continue;
+
+            int parenOpen = code.indexOf('(', m.end() - 1);
+            if (parenOpen < 0) continue;
+            int parenClose = findMatchingDelim(code, parenOpen, '(', ')');
+            if (parenClose < 0) continue;
+
+            int k = parenClose + 1;
+            while (k < code.length() && Character.isWhitespace(code.charAt(k))) k++;
+
+            if (k >= code.length()) { procedures.add(name); continue; }
+
+            char c = code.charAt(k);
+
+            if (c == '{') {
+                procedures.add(name);
+            } else if (c == '=') {
+                returningFunctions.add(name);
+            } else if (c == ':') {
+                int t = k + 1;
+                while (t < code.length() && Character.isWhitespace(code.charAt(t))) t++;
+                int typeStart = t;
+                while (t < code.length()) {
+                    char tc = code.charAt(t);
+                    if (Character.isLetterOrDigit(tc) || tc == '_' || tc == '.'
+                            || tc == '<' || tc == '>' || tc == '?' || tc == ','
+                            || tc == ' ') {
+                        t++;
+                    } else break;
+                }
+                String retType = code.substring(typeStart, t).trim();
+                int lt = retType.indexOf('<');
+                String baseType = lt > 0 ? retType.substring(0, lt).trim() : retType;
+                if (baseType.endsWith("?")) baseType = baseType.substring(0, baseType.length() - 1);
+
+                if (baseType.equals("Unit") || baseType.isEmpty()) {
+                    procedures.add(name);
+                } else {
+                    returningFunctions.add(name);
+                }
+            } else {
+                procedures.add(name);
+            }
+        }
+    }
+
+    private List<String> extractFunctionBodies(String code) {
+        List<String> result = new ArrayList<>();
+        Pattern p = Pattern.compile("\\bfun\\b[^\\n{;=]*?\\(", Pattern.MULTILINE);
+        Matcher m = p.matcher(code);
+
+        List<int[]> used = new ArrayList<>();
+        while (m.find()) {
+            int parenOpen = code.indexOf('(', m.start());
+            if (parenOpen < 0) continue;
+            int parenClose = findMatchingDelim(code, parenOpen, '(', ')');
+            if (parenClose < 0) continue;
+
+            int k = parenClose + 1;
+            while (k < code.length()) {
+                char c = code.charAt(k);
+                if (c == '{' || c == '=') break;
+                if (c == ';') { k = -1; break; }
+                k++;
+            }
+            if (k < 0 || k >= code.length()) continue;
+
+            if (code.charAt(k) == '{') {
+                int braceEnd = findMatchingDelim(code, k, '{', '}');
+                if (braceEnd > k) {
+                    boolean skip = false;
+                    for (int[] r : used) {
+                        if (k >= r[0] && k <= r[1]) { skip = true; break; }
+                    }
+                    if (skip) continue;
+                    used.add(new int[]{k, braceEnd});
+                    result.add(code.substring(k + 1, braceEnd));
+                }
+            } else {
+                int end = code.indexOf('\n', k);
+                if (end < 0) end = code.length();
+                result.add(code.substring(k + 1, end));
+            }
+        }
+        return result;
+    }
+
+    private int findMatchingDelim(String code, int openPos, char open, char close) {
+        int depth = 0;
+        for (int i = openPos; i < code.length(); i++) {
+            char c = code.charAt(i);
+            if (c == open) depth++;
+            else if (c == close) {
+                depth--;
+                if (depth == 0) return i;
+            }
+        }
+        return -1;
+    }
+
     // ================== Токенизация ==================
 
     private List<Token> tokenize(String code) {
@@ -167,7 +387,8 @@ public class Main extends JFrame {
             if (Character.isWhitespace(c)) { i++; continue; }
 
             if (c == '"' && i + 2 < n && code.charAt(i + 1) == '"' && code.charAt(i + 2) == '"') {
-                int start = i; i += 3;
+                int start = i;
+                i += 3;
                 while (i + 2 < n && !(code.charAt(i) == '"' && code.charAt(i + 1) == '"' && code.charAt(i + 2) == '"')) i++;
                 i = Math.min(i + 3, n);
                 tokens.add(new Token(TokenType.StringLiteral, code.substring(start, i)));
@@ -227,27 +448,8 @@ public class Main extends JFrame {
         return tokens;
     }
 
-    // ================== Анализ ветвлений ==================
+    // ================== Джилба ==================
 
-    /**
-     * Линейный обход диапазона [from, to) с начальной вложенностью startNesting.
-     *
-     * Правила:
-     *  - if (в т.ч. else if)     → "if",        +1 к abs
-     *      сам if на уровне currentNesting, тело — currentNesting+1,
-     *      else if / else — тот же уровень (currentNesting)
-     *  - when                    → НЕ считается (ни строки, ни abs)
-     *      case[i] на уровне base+i, тело case — base+i+1,
-     *      else -> (default) НЕ считается и НЕ занимает позицию
-     *  - for                     → "for",       +1 к abs, тело +1
-     *  - while                   → "while",     +1 к abs, тело +1
-     *      while от do-while пропускается
-     *  - do-while                → "do-while",  +1 к abs, тело +1
-     *  - ?: (Элвис)              → "?:",        +1 к abs,
-     *      правая часть — на уровень глубже
-     *  - catch                   → НЕ считается
-     *  - try / finally / else    → не считаются
-     */
     private void analyzeBranchesRange(List<Token> tokens, int from, int to, int startNesting) {
         Deque<Integer> nestingStack = new ArrayDeque<>();
         int currentNesting = startNesting;
@@ -261,11 +463,9 @@ public class Main extends JFrame {
                 } else if (t.value.equals("}")) {
                     if (!nestingStack.isEmpty()) currentNesting = nestingStack.pop();
                 } else if (t.value.equals("?:")) {
-                    // Элвис-оператор — ветвление: если слева null, идём вправо.
                     addBranch("?:");
                     absoluteComplexity++;
-                    // Правая часть — как тело if — на уровень глубже.
-                    maxNesting = Math.max(maxNesting, currentNesting + 1);
+                    maxNesting = Math.max(maxNesting, currentNesting);
                 }
                 continue;
             }
@@ -273,70 +473,36 @@ public class Main extends JFrame {
             if (t.type != TokenType.Identifier) continue;
 
             switch (t.value) {
-                case "else": {
-                    // else / else if — не увеличивают вложенность.
-                    break;
-                }
-                case "when": {
-                    i = processWhenCases(tokens, i, currentNesting);
-                    break;
-                }
-                case "for": {
-                    addBranch("for");
-                    absoluteComplexity++;
-                    maxNesting = Math.max(maxNesting, currentNesting);
-                    currentNesting = currentNesting + 1;   // <-- инкремент на for
-                    break;
-                }
-                case "if": {
-                    addBranch("if");
-                    absoluteComplexity++;
-                    maxNesting = Math.max(maxNesting, currentNesting);
-                    currentNesting = currentNesting + 1;   // <-- инкремент на if
-                    break;
-                }
-                case "while": {
+                case "else": break;
+                case "when": i = processWhenCases(tokens, i, currentNesting); break;
+                case "for":
+                    addBranch("for"); absoluteComplexity++;
+                    maxNesting = Math.max(maxNesting, currentNesting); break;
+                case "if":
+                    addBranch("if"); absoluteComplexity++;
+                    maxNesting = Math.max(maxNesting, currentNesting); break;
+                case "while":
                     if (isWhileOfDoWhile(tokens, i)) break;
-                    addBranch("while");
-                    absoluteComplexity++;
-                    maxNesting = Math.max(maxNesting, currentNesting);
-                    maxNesting = Math.max(maxNesting, currentNesting + 1);
-                    break;
-                }
-                case "do": {
-                    addBranch("do-while");
-                    absoluteComplexity++;
-                    maxNesting = Math.max(maxNesting, currentNesting);
-                    maxNesting = Math.max(maxNesting, currentNesting + 1);
-                    break;
-                }
-                case "try": {
-                    // try — не ветвление; вложенность не растёт.
-                    break;
-                }
+                    addBranch("while"); absoluteComplexity++;
+                    maxNesting = Math.max(maxNesting, currentNesting); break;
+                case "do":
+                    addBranch("do-while"); absoluteComplexity++;
+                    maxNesting = Math.max(maxNesting, currentNesting); break;
+                case "try": break;
             }
         }
     }
 
-    /**
-     * when: каждый -> (кроме else ->) — это вложенный if.
-     * case[0] на уровне baseNesting, case[1] на baseNesting+1, и т.д.
-     * else -> (default) НЕ считается и НЕ занимает позицию в цепочке.
-     * Тело case[i] — на уровне baseNesting + i + 1.
-     * Возвращает индекс закрывающей } (чтобы внешний цикл продолжил с неё).
-     */
     private int processWhenCases(List<Token> tokens, int whenIdx, int baseNesting) {
         int n = tokens.size();
         int j = whenIdx + 1;
-        // Пропускаем (subject), если есть
         if (j < n && isOp(tokens.get(j), "(")) {
-            int close = findCloseParen(tokens, j, n);
+            int close = findCloseParen(tokens, j);
             if (close > 0) j = close + 1;
         }
-        // Ищем {
         while (j < n && !isOp(tokens.get(j), "{")) j++;
         if (j >= n) return whenIdx;
-        int closeBrace = findCloseBraceTokens(tokens, j, n);
+        int closeBrace = findCloseBraceTokens(tokens, j);
         if (closeBrace < 0) return whenIdx;
 
         int caseIndex = 0;
@@ -350,7 +516,6 @@ public class Main extends JFrame {
                     if (prev.type == TokenType.Identifier && prev.value.equals("else")) isElse = true;
                 }
 
-                // Границы тела case — до следующего -> на том же уровне или до }
                 int caseStart = k + 1;
                 int caseEnd = closeBrace;
                 int depth = 0;
@@ -364,10 +529,7 @@ public class Main extends JFrame {
                 }
 
                 if (isElse) {
-                    // else -> (default): НЕ считаем, НЕ увеличиваем caseIndex.
-                    int elseLevel = (caseIndex > 0)
-                            ? baseNesting + caseIndex - 1
-                            : baseNesting;
+                    int elseLevel = (caseIndex > 0) ? baseNesting + caseIndex - 1 : baseNesting;
                     analyzeBranchesRange(tokens, caseStart, caseEnd, elseLevel);
                 } else {
                     int caseLevel = baseNesting + caseIndex;
@@ -388,7 +550,6 @@ public class Main extends JFrame {
         return closeBrace;
     }
 
-    /** Проверяет, является ли while частью do-while. */
     private boolean isWhileOfDoWhile(List<Token> tokens, int whileIdx) {
         if (whileIdx <= 0) return false;
         int depth = 0;
@@ -412,70 +573,284 @@ public class Main extends JFrame {
         return false;
     }
 
+    // ================== Холстед: только операторы ==================
+
+    private void analyzeTokens(List<Token> tokens) {
+        int i = 0;
+        while (i < tokens.size()) {
+            Token t = tokens.get(i);
+
+            if (t.type == TokenType.Identifier) {
+                switch (t.value) {
+                    case "if":
+                        if (hasElseAfter(tokens, i)) addOperator("if ... else");
+                        else addOperator("if");
+                        i++; continue;
+                    case "when":
+                        addOperator("when ... else");
+                        i++; continue;
+                    case "for":
+                        addOperator("for()");
+                        i++; continue;
+                    case "while":
+                        addOperator("while()");
+                        i++; continue;
+                    case "do":
+                        addOperator("do ... while()");
+                        i++; continue;
+                    case "try":
+                        addOperator("try ... catch ... finally");
+                        i++; continue;
+                }
+
+                if (COMPOUND_PART_KEYWORDS.contains(t.value)) { i++; continue; }
+                if (KEYWORD_OPERATORS.contains(t.value)) { addOperator(t.value); i++; continue; }
+                if (SKIP_KEYWORDS.contains(t.value)) { i++; continue; }
+
+                if (isFunctionCall(tokens, i) || isTrailingLambdaCall(tokens, i)) {
+                    addOperator(t.value + "()");
+                    i++;
+                    if (i < tokens.size() && isOp(tokens.get(i), "(")) i++;
+                    continue;
+                }
+
+                i++;
+                continue;
+            }
+
+            if (t.type == TokenType.Number
+                    || t.type == TokenType.StringLiteral
+                    || t.type == TokenType.CharLiteral) {
+                i++;
+                continue;
+            }
+
+            if (t.type == TokenType.Operator) {
+                handleOperatorToken(tokens, i);
+                i++;
+                continue;
+            }
+
+            i++;
+        }
+    }
+
+    private boolean isFunctionCall(List<Token> tokens, int idx) {
+        int j = idx + 1;
+        if (j >= tokens.size()) return false;
+
+        if (isOp(tokens.get(j), "<")) {
+            int depth = 0;
+            while (j < tokens.size()) {
+                Token tk = tokens.get(j);
+                if (tk.type == TokenType.Operator && tk.value.equals("<")) depth++;
+                else if (tk.type == TokenType.Operator && tk.value.equals(">")) {
+                    depth--;
+                    if (depth == 0) { j++; break; }
+                } else if (tk.type == TokenType.Operator && tk.value.equals(";")) {
+                    return false;
+                }
+                j++;
+            }
+        }
+        return j < tokens.size() && isOp(tokens.get(j), "(");
+    }
+
+    private boolean isTrailingLambdaCall(List<Token> tokens, int idx) {
+        int j = idx + 1;
+        return j < tokens.size() && isOp(tokens.get(j), "{");
+    }
+
+    private boolean hasElseAfter(List<Token> tokens, int ifIdx) {
+        int openParen = ifIdx + 1;
+        if (openParen >= tokens.size()) return false;
+        if (!isOp(tokens.get(openParen), "(")) return false;
+        int closeParen = findCloseParen(tokens, openParen);
+        if (closeParen < 0) return false;
+
+        int j = closeParen + 1;
+        if (j >= tokens.size()) return false;
+
+        if (isOp(tokens.get(j), "{")) {
+            int end = findCloseBraceTokens(tokens, j);
+            if (end < 0) return false;
+            j = end + 1;
+        } else {
+            int depthBrace = 0, depthParen = 0;
+            while (j < tokens.size()) {
+                Token tk = tokens.get(j);
+                if (tk.type == TokenType.Operator) {
+                    switch (tk.value) {
+                        case "{": depthBrace++; break;
+                        case "}": if (depthBrace == 0) { j = -1; } else depthBrace--; break;
+                        case "(": depthParen++; break;
+                        case ")": depthParen--; break;
+                        case ";": if (depthBrace == 0 && depthParen == 0) { j++; } break;
+                    }
+                    if (j < 0) break;
+                }
+                if (j >= 0 && j < tokens.size()) {
+                    Token c = tokens.get(j);
+                    if (c.type == TokenType.Operator && c.value.equals(";") && depthBrace == 0 && depthParen == 0) {
+                        j++;
+                        break;
+                    }
+                }
+                j++;
+            }
+        }
+
+        return j >= 0 && j < tokens.size()
+                && tokens.get(j).type == TokenType.Identifier
+                && tokens.get(j).value.equals("else");
+    }
+
     private boolean isOp(Token t, String v) {
         return t.type == TokenType.Operator && t.value.equals(v);
     }
 
-    private int findCloseParen(List<Token> tokens, int openIdx, int to) {
-        if (openIdx >= to || !isOp(tokens.get(openIdx), "(")) return -1;
+    private int findCloseParen(List<Token> tokens, int openIdx) {
+        if (openIdx >= tokens.size() || !isOp(tokens.get(openIdx), "(")) return -1;
         int depth = 0;
-        for (int i = openIdx; i < to; i++) {
+        for (int i = openIdx; i < tokens.size(); i++) {
             if (isOp(tokens.get(i), "(")) depth++;
             else if (isOp(tokens.get(i), ")")) { depth--; if (depth == 0) return i; }
         }
         return -1;
     }
 
-    private int findCloseBraceTokens(List<Token> tokens, int openIdx, int to) {
-        if (openIdx >= to || !isOp(tokens.get(openIdx), "{")) return -1;
+    private int findCloseBraceTokens(List<Token> tokens, int openIdx) {
+        if (openIdx >= tokens.size() || !isOp(tokens.get(openIdx), "{")) return -1;
         int depth = 0;
-        for (int i = openIdx; i < to; i++) {
+        for (int i = openIdx; i < tokens.size(); i++) {
             if (isOp(tokens.get(i), "{")) depth++;
             else if (isOp(tokens.get(i), "}")) { depth--; if (depth == 0) return i; }
         }
         return -1;
     }
 
-    // ================== Вывод ==================
+    private void handleOperatorToken(List<Token> tokens, int idx) {
+        String v = tokens.get(idx).value;
+
+        if (v.equals(")") || v.equals("}") || v.equals("]")) return;
+
+        if (v.equals("(")) {
+            if (isTypeCast(tokens, idx)) addOperator("(type)");
+            else addOperator("()");
+            return;
+        }
+        if (v.equals("{")) { addOperator("{}"); return; }
+        if (v.equals("[")) { addOperator("[]"); return; }
+
+        if (v.equals("?:")) { addOperator("?:"); return; }
+        if (v.equals(":"))  { addOperator(":");  return; }
+
+        if (v.equals("-")) { addOperator(isUnary(tokens, idx) ? "-(unary)" : "-"); return; }
+        if (v.equals("+")) { addOperator(isUnary(tokens, idx) ? "+(unary)" : "+"); return; }
+        if (v.equals("!")) { addOperator("!"); return; }
+
+        if (v.equals(",")) { addOperator(","); return; }
+        if (v.equals(";")) { addOperator(";"); return; }
+        if (v.equals(".")) { addOperator("."); return; }
+        if (v.equals("..")) { addOperator(".."); return; }
+        if (v.equals("..<")) { addOperator("..<"); return; }
+        if (v.equals("->")) { addOperator("->"); return; }
+        if (v.equals("::")) { addOperator("::"); return; }
+        if (v.equals("?.")) { addOperator("?."); return; }
+        if (v.equals("!!")) { addOperator("!!"); return; }
+
+        addOperator(v);
+    }
+
+    private boolean isUnary(List<Token> tokens, int idx) {
+        if (idx == 0) return true;
+        Token prev = tokens.get(idx - 1);
+        if (prev.type == TokenType.Operator) {
+            String pv = prev.value;
+            if (pv.equals(")") || pv.equals("]") || pv.equals("}")) return false;
+            if (pv.equals("++") || pv.equals("--")) return false;
+            return true;
+        }
+        if (prev.type == TokenType.Identifier) {
+            String pv = prev.value;
+            if (pv.equals("return") || pv.equals("throw") || pv.equals("in")
+                    || pv.equals("is") || pv.equals("as")) return true;
+            return false;
+        }
+        return false;
+    }
+
+    private boolean isTypeCast(List<Token> tokens, int openIdx) {
+        if (openIdx + 2 >= tokens.size()) return false;
+        int k = openIdx + 1;
+
+        Token first = tokens.get(k);
+        if (first.type != TokenType.Identifier) return false;
+
+        String typeName = first.value;
+        boolean known = TYPE_KEYWORDS.contains(typeName)
+                || userTypes.contains(typeName)
+                || (!typeName.isEmpty() && Character.isUpperCase(typeName.charAt(0)));
+        if (!known) return false;
+        k++;
+
+        if (k < tokens.size() && isOp(tokens.get(k), "?")) k++;
+
+        return k < tokens.size() && isOp(tokens.get(k), ")");
+    }
+
+    // ================== Накопление ==================
 
     private void addBranch(String name) {
         branchCounts.merge(name, 1, Integer::sum);
     }
 
+    private void addOperator(String name) {
+        operators.merge(name, 1, Integer::sum);
+    }
+
+    // ================== Вывод ==================
+
     private void displayResults() {
+        // --- Ветвления (Джилба) ---
         branchesModel.setRowCount(0);
-        List<Map.Entry<String, Integer>> list = new ArrayList<>(branchCounts.entrySet());
-        list.sort((a, b) -> {
+        List<Map.Entry<String, Integer>> bl = new ArrayList<>(branchCounts.entrySet());
+        bl.sort((a, b) -> {
             int c = Integer.compare(b.getValue(), a.getValue());
             return c != 0 ? c : a.getKey().compareTo(b.getKey());
         });
-        for (Map.Entry<String, Integer> e : list) {
+        for (Map.Entry<String, Integer> e : bl)
             branchesModel.addRow(new Object[]{e.getKey(), e.getValue()});
-        }
         branchesModel.addRow(new Object[]{"ИТОГО", absoluteComplexity});
 
-        double relative = (operatorCount > 0)
-                ? (double) absoluteComplexity / operatorCount
-                : 0.0;
+        // --- Операторы (Холстед) ---
+        List<Map.Entry<String, Integer>> opList = new ArrayList<>(operators.entrySet());
+        opList.sort((a, b) -> {
+            int c = Integer.compare(b.getValue(), a.getValue());
+            return c != 0 ? c : a.getKey().compareTo(b.getKey());
+        });
 
+        int n1 = opList.size();
+        int N1 = opList.stream().mapToInt(Map.Entry::getValue).sum();
+
+        operatorsModel.setRowCount(0);
+        for (Map.Entry<String, Integer> e : opList)
+            operatorsModel.addRow(new Object[]{e.getKey(), e.getValue()});
+        operatorsModel.addRow(new Object[]{"ИТОГО  η1 = " + n1, N1});
+
+        // --- Метрики ---
         StringBuilder sb = new StringBuilder();
         sb.append("МЕТРИКИ ДЖИЛБА\n");
         sb.append("─────────────────────────────────────────────\n");
-        sb.append(String.format("  Абсолютная сложность (abs)       = %d%n", absoluteComplexity));
-        sb.append(String.format("  Количество операторов (ops)      = %d%n", operatorCount));
-        sb.append(String.format("  Относительная сложность (rel)    = %.4f%n", relative));
-        sb.append(String.format("  Максимальный уровень вложенности = %d%n", maxNesting));
-        sb.append("─────────────────────────────────────────────\n");
-        sb.append("Пояснение:\n");
-        sb.append("  abs = if (в т.ч. else if) + when-case + for\n");
-        sb.append("        + while + do-while + ?:\n");
-        sb.append("  rel = abs / ops  (ops — все операторы, кроме ';')\n");
-        sb.append("  Вложенность нумеруется с 0.\n");
-        sb.append("  when сам по себе не считается — только его case'ы.\n");
-        sb.append("  else -> в when — это default, не считается.\n");
-        sb.append("  else if — отдельный if (в таблице учитывается, вложенность не растёт).\n");
-        sb.append("  catch не считается ветвлением.\n");
-        sb.append("  ?: (Элвис) — считается ветвлением.\n");
+        sb.append(String.format("  Абсолютная сложность (abs)        = %d%n", absoluteComplexity));
+        sb.append(String.format("  Количество операторов (ops)       = %d%n", N1));
+        double relative = N1 > 0 ? (double) absoluteComplexity / N1 : 0.0;
+        sb.append(String.format("  Относительная сложность (rel)     = %.4f%n", relative));
+        sb.append(String.format("  Максимальный уровень вложенности  = %d%n", maxNesting));
+        sb.append('\n');
+        sb.append("ОПЕРАТОРЫ (Холстед)\n");
+        sb.append(String.format("  η1  — словарь операторов          = %d%n", n1));
+        sb.append(String.format("  N1  — всего операторов            = %d%n", N1));
 
         metricsArea.setText(sb.toString());
     }
