@@ -800,13 +800,12 @@ public class Main extends JFrame {
         StringBuilder sb = new StringBuilder();
         sb.append("МЕТРИКИ ДЖИЛБА\n");
         sb.append("─────────────────────────────────────────────\n");
-        sb.append(String.format("  Абсолютная сложность (abs)        = %d%n", absoluteComplexity));
-        sb.append(String.format("  Количество операторов (ops)       = %d%n", N1));
+        sb.append(String.format("  Абсолютная сложность         = %d%n", absoluteComplexity));
+        sb.append(String.format("  Количество операторов       = %d%n", N1));
         double relative = N1 > 0 ? (double) absoluteComplexity / N1 : 0.0;
         sb.append(String.format("  Относительная сложность (rel)     = %.4f%n", relative));
         sb.append(String.format("  Максимальный уровень вложенности  = %d%n", maxNesting));
         sb.append('\n');
-        sb.append("ОПЕРАТОРЫ (Холстед)\n");
         sb.append(String.format("  η1  — словарь операторов          = %d%n", n1));
         sb.append(String.format("  N1  — всего операторов            = %d%n", N1));
 
