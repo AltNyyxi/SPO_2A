@@ -41,14 +41,6 @@ fun processTransactions(transactions: MutableList<Transaction>) {
                         totalVolume -= (t.amount + 1.5)
                         t.status = 1
                     }
-                    4 -> {
-                        totalVolume += t.amount
-                        t.status = 1
-                    }
-                    5 -> {
-                        totalVolume -= t.amount
-                        t.status = 1
-                    }
                     else -> {
                         t.status = 2
                     }
