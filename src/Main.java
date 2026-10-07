@@ -413,7 +413,7 @@ public class Main extends JFrame {
             if (t.type == TokenType.Operator) {
                 if (t.value.equals("{")) {
                     nestingStack.push(currentNesting);
-                    currentNesting = currentNesting + 1;
+                    if (braceIncrementsNesting(tokens, i)) currentNesting++;
                 } else if (t.value.equals("}")) {
                     if (!nestingStack.isEmpty()) currentNesting = nestingStack.pop();
                 } else if (t.value.equals("?:")) {
@@ -427,25 +427,60 @@ public class Main extends JFrame {
             if (t.type != TokenType.Identifier) continue;
 
             switch (t.value) {
-                case "else": break;
-                case "when": i = processWhenCases(tokens, i, currentNesting); break;
+                case "when":
+                    i = processWhenCases(tokens, i, currentNesting);
+                    break;
                 case "for":
-                    addBranch("for"); absoluteComplexity++;
-                    maxNesting = Math.max(maxNesting, currentNesting); break;
                 case "if":
-                    addBranch("if"); absoluteComplexity++;
-                    maxNesting = Math.max(maxNesting, currentNesting); break;
+                    addBranch(t.value);
+                    absoluteComplexity++;
+                    maxNesting = Math.max(maxNesting, currentNesting);
+                    break;
                 case "while":
                     if (isWhileOfDoWhile(tokens, i)) break;
-                    addBranch("while"); absoluteComplexity++;
-                    maxNesting = Math.max(maxNesting, currentNesting); break;
+                    addBranch("while");
+                    absoluteComplexity++;
+                    maxNesting = Math.max(maxNesting, currentNesting);
+                    break;
                 case "do":
-                    addBranch("do-while"); absoluteComplexity++;
-                    maxNesting = Math.max(maxNesting, currentNesting); break;
-                case "try": break;
+                    addBranch("do-while");
+                    absoluteComplexity++;
+                    maxNesting = Math.max(maxNesting, currentNesting);
+                    break;
             }
         }
     }
+
+    private boolean braceIncrementsNesting(List<Token> tokens, int bracePos) {
+        if (bracePos == 0) return false;
+        Token prev = tokens.get(bracePos - 1);
+
+        if (prev.type == TokenType.Identifier) {
+            return prev.value.equals("else") || prev.value.equals("do");
+        }
+
+        if (isOp(prev, ")")) {
+            int depth = 0;
+            for (int m = bracePos - 1; m >= 0; m--) {
+                Token tm = tokens.get(m);
+                if (isOp(tm, ")")) {
+                    depth++;
+                } else if (isOp(tm, "(")) {
+                    depth--;
+                    if (depth == 0) {
+                        if (m == 0) return false;
+                        Token kw = tokens.get(m - 1);
+                        return kw.type == TokenType.Identifier
+                                && (kw.value.equals("if")
+                                || kw.value.equals("for")
+                                || kw.value.equals("while"));
+                    }
+                }
+            }
+        }
+        return false;
+    }
+
 
     private int processWhenCases(List<Token> tokens, int whenIdx, int baseNesting) {
         int n = tokens.size();
@@ -496,7 +531,7 @@ public class Main extends JFrame {
                     int caseLevel = caseBaseLevel + caseIndex;
                     addBranch("when-case");
                     absoluteComplexity++;
-                    maxNesting = Math.max(maxNesting, caseLevel);
+                    maxNesting = Math.max(maxNesting, caseLevel); // уровень самого case
                     analyzeBranchesRange(tokens, caseStart, caseEnd, caseLevel + 1);
                     caseIndex++;
                 }
