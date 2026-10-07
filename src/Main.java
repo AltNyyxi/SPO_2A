@@ -164,17 +164,18 @@ public class Main extends JFrame {
 
         String code = removeCommentsAndPackage(raw);
 
-        // --- Джилба: по полному коду ---
-        List<Token> jilbTokens = tokenize(code);
-        analyzeBranchesRange(jilbTokens, 0, jilbTokens.size(), 0);
-
-        // --- Холстед (только операторы): по телам функций ---
+        // Готовим данные для обеих метрик одинаково
         collectUserTypes(code);
-        String masked = maskLiterals(code);
         classifyFunctions(code);
 
         List<String> bodies = extractFunctionBodies(code);
         String analysisCode = String.join("\n", bodies);
+
+        // --- Джилба: по телам функций ---
+        List<Token> jilbTokens = tokenize(analysisCode);
+        analyzeBranchesRange(jilbTokens, 0, jilbTokens.size(), 0);
+
+        // --- Холстед (только операторы): по телам функций ---
         List<Token> holstedTokens = tokenize(analysisCode);
         analyzeTokens(holstedTokens);
 
@@ -208,54 +209,6 @@ public class Main extends JFrame {
             String trimmed = ln.trim();
             if (trimmed.startsWith("package ") || trimmed.startsWith("import ")) sb.append("\n");
             else sb.append(ln).append('\n');
-        }
-        return sb.toString();
-    }
-
-    private String maskLiterals(String code) {
-        StringBuilder sb = new StringBuilder(code);
-        int n = sb.length();
-        int i = 0;
-        while (i < n) {
-            char c = sb.charAt(i);
-
-            if (c == '"' && i + 2 < n && sb.charAt(i + 1) == '"' && sb.charAt(i + 2) == '"') {
-                int j = i + 3;
-                while (j + 2 < n && !(sb.charAt(j) == '"' && sb.charAt(j + 1) == '"' && sb.charAt(j + 2) == '"')) {
-                    if (sb.charAt(j) != '\n') sb.setCharAt(j, ' ');
-                    j++;
-                }
-                for (int k = i; k < Math.min(j + 3, n); k++) {
-                    if (sb.charAt(k) != '\n') sb.setCharAt(k, ' ');
-                }
-                i = j + 3;
-                continue;
-            }
-            if (c == '"') {
-                int j = i + 1;
-                while (j < n) {
-                    char cj = sb.charAt(j);
-                    if (cj == '\\' && j + 1 < n) { sb.setCharAt(j, ' '); sb.setCharAt(j + 1, ' '); j += 2; continue; }
-                    if (cj == '"') break;
-                    if (cj != '\n') sb.setCharAt(j, ' ');
-                    j++;
-                }
-                i = j + 1;
-                continue;
-            }
-            if (c == '\'') {
-                int j = i + 1;
-                while (j < n) {
-                    char cj = sb.charAt(j);
-                    if (cj == '\\' && j + 1 < n) { sb.setCharAt(j, ' '); sb.setCharAt(j + 1, ' '); j += 2; continue; }
-                    if (cj == '\'') break;
-                    sb.setCharAt(j, ' ');
-                    j++;
-                }
-                i = j + 1;
-                continue;
-            }
-            i++;
         }
         return sb.toString();
     }
@@ -460,6 +413,7 @@ public class Main extends JFrame {
             if (t.type == TokenType.Operator) {
                 if (t.value.equals("{")) {
                     nestingStack.push(currentNesting);
+                    currentNesting = currentNesting + 1;
                 } else if (t.value.equals("}")) {
                     if (!nestingStack.isEmpty()) currentNesting = nestingStack.pop();
                 } else if (t.value.equals("?:")) {
@@ -496,6 +450,7 @@ public class Main extends JFrame {
     private int processWhenCases(List<Token> tokens, int whenIdx, int baseNesting) {
         int n = tokens.size();
         int j = whenIdx + 1;
+
         if (j < n && isOp(tokens.get(j), "(")) {
             int close = findCloseParen(tokens, j);
             if (close > 0) j = close + 1;
@@ -504,6 +459,10 @@ public class Main extends JFrame {
         if (j >= n) return whenIdx;
         int closeBrace = findCloseBraceTokens(tokens, j);
         if (closeBrace < 0) return whenIdx;
+
+        // when стоит на уровне baseNesting. Его case'ы идут подряд:
+        // case[0] — на baseNesting, case[1] — на baseNesting+1, и т.д.
+        int caseBaseLevel = baseNesting;
 
         int caseIndex = 0;
         int k = j + 1;
@@ -529,17 +488,16 @@ public class Main extends JFrame {
                 }
 
                 if (isElse) {
-                    int elseLevel = (caseIndex > 0) ? baseNesting + caseIndex - 1 : baseNesting;
+                    int elseLevel = (caseIndex > 0)
+                            ? caseBaseLevel + caseIndex - 1
+                            : caseBaseLevel;
                     analyzeBranchesRange(tokens, caseStart, caseEnd, elseLevel);
                 } else {
-                    int caseLevel = baseNesting + caseIndex;
-                    int caseBodyLevel = caseLevel + 1;
-
+                    int caseLevel = caseBaseLevel + caseIndex;
                     addBranch("when-case");
                     absoluteComplexity++;
                     maxNesting = Math.max(maxNesting, caseLevel);
-
-                    analyzeBranchesRange(tokens, caseStart, caseEnd, caseBodyLevel);
+                    analyzeBranchesRange(tokens, caseStart, caseEnd, caseLevel + 1);
                     caseIndex++;
                 }
                 k = caseEnd;

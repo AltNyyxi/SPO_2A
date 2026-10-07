@@ -1,62 +1,94 @@
-package test
+data class Transaction(
+    var id: Int,
+    var type: Int,
+    var amount: Double,
+    var status: Int
+)
 
-class BranchingDemo {
+fun processTransactions(transactions: MutableList<Transaction>) {
+    var successCount = 0
+    var failCount = 0
+    var totalVolume = 0.0
 
-    fun classify(x: Int, y: Int): String {
-        if (x > 0) {
-            if (y > 0) {
-                if (x > y) { return "x>y>0" } else {
-                    for (i: Int in 0 until y) {
-                        when (i) {
-                            3 -> return "x"
-                            4 -> return "y"
-                            5 -> return "x"
-                            6 -> return "y"
+    for (i in 0 until transactions.size) {
+        val t = transactions[i]
+
+        if (t.status == 0) {
+
+            if (t.amount <= 0) {
+                if (t.type != 4) {
+                    t.status = 2
+                    failCount++
+                    continue
+                } else {
+                    t.status = 1
+                }
+            } else {
+                when (t.type) {
+                    1 -> {
+                        totalVolume += t.amount
+                        t.status = 1
+                    }
+                    2 -> {
+                        if (totalVolume >= t.amount) {
+                            totalVolume -= t.amount
+                            t.status = 1
+                        } else {
+                            t.status = 2
                         }
                     }
+                    3 -> {
+                        totalVolume -= (t.amount + 1.5)
+                        t.status = 1
+                    }
+                    4 -> {
+                        totalVolume += t.amount
+                        t.status = 1
+                    }
+                    5 -> {
+                        totalVolume -= t.amount
+                        t.status = 1
+                    }
+                    else -> {
+                        t.status = 2
+                    }
                 }
-            } else return "x>0, y<=0"
-        } else if (x == 0) {
-            return "x=0"
+            }
+        } else if (t.status == 1) {
+            successCount++
         } else {
-            return "x<0"
-        }
-        return "g"
-    }
-
-    fun whenDemo(x: Int, a: Int, b: Int): String {
-
-        when (x) {
-            1, 2, 3 -> println("мало")
-            in 4..10 -> { println("средне"); println("ок") }
-            !in 0..100 -> println("вне")
-            else -> println("много")
-        }
-        return when {
-            a > b -> "a>b"
-            a < b -> "a<b"
-            else -> "a==b"
+            failCount++
         }
     }
 
-    fun loops(n: Int) {
-        var i = 0
-        while (i < n) {
-            if (i % 2 == 0) println("even $i")
-            i++
+    var retries = 3
+    while (retries > 0) {
+        if (totalVolume < 0) {
+            totalVolume += 10.0
+            retries--
+        } else {
+            break
         }
-
-        var k = 0
-        do {
-            if (k % 3 == 0) println("tri $k")
-            k++
-        } while (k < n)
     }
+
+    var syncAttempts = 0
+    do {
+        syncAttempts++
+        if (syncAttempts == 2) {
+            break
+        }
+    } while (syncAttempts < 5)
+
+    println("Обработка завершена. Баланс: $totalVolume")
 }
 
 fun main() {
-    val d = BranchingDemo()
-    println(d.classify(3, 2))
-    println(d.whenDemo(5, 3, 7))
-    d.loops(3)
+    val data = mutableListOf(
+        Transaction(1, 1, 100.0, 0),
+        Transaction(2, 2, 150.0, 0),
+        Transaction(3, 99, 10.0, 0),
+        Transaction(4, 4, 0.0, 0)
+    )
+
+    processTransactions(data)
 }
